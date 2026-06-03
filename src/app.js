@@ -85,13 +85,34 @@ const io = new SocketIOServer(httpServer, {
 
 initSocket(io);
 
+// ── Auto-migrate on startup ───────────────────────────────────────────────────
+async function runMigrations() {
+  const { pool } = require('./config/database');
+  const fs = require('fs');
+  const migrationPath = require('path').join(__dirname, '..', 'migrations', '001_init.sql');
+  if (!fs.existsSync(migrationPath)) return;
+  const sql = fs.readFileSync(migrationPath, 'utf8');
+  try {
+    await pool.query(sql);
+    console.log('Database migration completed.');
+  } catch (err) {
+    // Errors like "already exists" are fine on subsequent starts
+    if (err.code !== '42P07' && !err.message.includes('already exists')) {
+      console.warn('Migration warning:', err.message);
+    } else {
+      console.log('Schema already up to date.');
+    }
+  }
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 3000;
 
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, async () => {
   console.log(`Kerja Serabutan API running on port ${PORT}`);
   console.log(`Environment : ${process.env.NODE_ENV || 'development'}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
+  await runMigrations();
 });
 
 // Graceful shutdown
