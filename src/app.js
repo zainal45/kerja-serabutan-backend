@@ -87,22 +87,42 @@ initSocket(io);
 
 // ── Auto-migrate on startup ───────────────────────────────────────────────────
 async function runMigrations() {
-  const { pool } = require('./config/database');
+  const { Pool: PgPool } = require('pg');
   const fs = require('fs');
   const migrationPath = require('path').join(__dirname, '..', 'migrations', '001_init.sql');
   if (!fs.existsSync(migrationPath)) return;
   const sql = fs.readFileSync(migrationPath, 'utf8');
-  try {
-    await pool.query(sql);
-    console.log('Database migration completed.');
-  } catch (err) {
-    // Errors like "already exists" are fine on subsequent starts
-    if (err.code !== '42P07' && !err.message.includes('already exists')) {
+
+  // Try with SSL first (public Railway URL), then without (private railway.internal URL).
+  const sslOptions = [{ rejectUnauthorized: false }, false];
+
+  for (const ssl of sslOptions) {
+    const migPool = new PgPool({
+      connectionString: process.env.DATABASE_URL,
+      ssl,
+      max: 1,
+      connectionTimeoutMillis: 15000,
+    });
+    try {
+      await migPool.query(sql);
+      console.log('Database migration completed.');
+      await migPool.end();
+      return;
+    } catch (err) {
+      await migPool.end().catch(() => {});
+      if (err.code === '42P07' || err.message.includes('already exists')) {
+        console.log('Schema already up to date.');
+        return;
+      }
+      if (/ssl/i.test(err.message)) {
+        // SSL negotiation failed — try next config
+        continue;
+      }
       console.warn('Migration warning:', err.message);
-    } else {
-      console.log('Schema already up to date.');
+      return;
     }
   }
+  console.warn('Migration: unable to connect to database for migration.');
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
